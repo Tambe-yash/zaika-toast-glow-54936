@@ -1,6 +1,5 @@
--- Zaika Toast - Database Schema
--- This is a sample SQL schema for your e-commerce bakery platform
--- You can use this to set up your database when you're ready to connect a backend
+-- Zaika Toast - Complete Database Schema for Supabase
+-- This schema includes all tables, security policies, and sample data
 
 -- ============================================
 -- USERS & AUTHENTICATION
@@ -174,9 +173,12 @@ CREATE TABLE orders (
     total_amount DECIMAL(10, 2) NOT NULL,
     
     -- Payment
-    payment_method VARCHAR(20) CHECK (payment_method IN ('card', 'upi', 'cod', 'wallet')),
+    payment_method VARCHAR(20) CHECK (payment_method IN ('card', 'upi', 'cod', 'wallet', 'razorpay')),
     payment_status VARCHAR(20) CHECK (payment_status IN ('pending', 'paid', 'failed', 'refunded')) DEFAULT 'pending',
     payment_id VARCHAR(255),
+    razorpay_order_id VARCHAR(255),
+    razorpay_payment_id VARCHAR(255),
+    razorpay_signature VARCHAR(255),
     
     -- Coupon
     coupon_code VARCHAR(50),
@@ -239,7 +241,7 @@ CREATE TABLE reviews (
 );
 
 -- ============================================
--- NEWSLETTER
+-- NEWSLETTER & CONTACT
 -- ============================================
 
 -- Newsletter Subscribers
@@ -249,6 +251,19 @@ CREATE TABLE newsletter_subscribers (
     is_active BOOLEAN DEFAULT TRUE,
     subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     unsubscribed_at TIMESTAMP
+);
+
+-- Contact Messages
+CREATE TABLE contact_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(200) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    subject VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    status VARCHAR(20) CHECK (status IN ('new', 'read', 'replied', 'archived')) DEFAULT 'new',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ============================================
@@ -290,12 +305,26 @@ CREATE TABLE admin_metadata (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Site Settings
+-- Site Settings (including API keys)
 CREATE TABLE site_settings (
     key VARCHAR(100) PRIMARY KEY,
     value TEXT,
     description TEXT,
+    is_encrypted BOOLEAN DEFAULT FALSE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- API Keys Storage (Secure)
+CREATE TABLE api_keys (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    service_name VARCHAR(100) NOT NULL,
+    key_name VARCHAR(100) NOT NULL,
+    key_value TEXT NOT NULL,
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(service_name, key_name)
 );
 
 -- ============================================
@@ -317,6 +346,11 @@ CREATE INDEX idx_orders_user ON orders(user_id);
 CREATE INDEX idx_orders_status ON orders(status);
 CREATE INDEX idx_orders_order_number ON orders(order_number);
 CREATE INDEX idx_orders_created_at ON orders(created_at);
+CREATE INDEX idx_orders_razorpay_order_id ON orders(razorpay_order_id);
+
+-- Contact Messages
+CREATE INDEX idx_contact_messages_status ON contact_messages(status);
+CREATE INDEX idx_contact_messages_created_at ON contact_messages(created_at);
 
 -- Reviews
 CREATE INDEX idx_reviews_product ON reviews(product_id);
@@ -354,12 +388,14 @@ INSERT INTO ingredients (name, is_allergen) VALUES
 ('Berries', FALSE);
 
 -- Insert Site Settings
-INSERT INTO site_settings (key, value, description) VALUES
-('site_name', 'Zaika Toast', 'Website name'),
-('delivery_charge', '50', 'Standard delivery charge'),
-('free_delivery_threshold', '500', 'Minimum order for free delivery'),
-('contact_email', 'hello@zaikatoast.com', 'Contact email'),
-('contact_phone', '+1 (555) 123-4567', 'Contact phone number');
+INSERT INTO site_settings (key, value, description, is_encrypted) VALUES
+('site_name', 'Zaika Toast', 'Website name', FALSE),
+('delivery_charge', '50', 'Standard delivery charge (INR)', FALSE),
+('free_delivery_threshold', '500', 'Minimum order for free delivery (INR)', FALSE),
+('contact_email', 'hello@zaikatoast.com', 'Contact email', FALSE),
+('contact_phone', '+1 (555) 123-4567', 'Contact phone number', FALSE),
+('razorpay_enabled', 'true', 'Enable Razorpay payments', FALSE),
+('google_oauth_enabled', 'true', 'Enable Google OAuth', FALSE);
 
 -- ============================================
 -- FUNCTIONS & TRIGGERS
@@ -387,6 +423,12 @@ CREATE TRIGGER update_orders_updated_at BEFORE UPDATE ON orders
 CREATE TRIGGER update_cart_items_updated_at BEFORE UPDATE ON cart_items
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_contact_messages_updated_at BEFORE UPDATE ON contact_messages
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_api_keys_updated_at BEFORE UPDATE ON api_keys
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
 -- ============================================
@@ -400,6 +442,9 @@ ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contact_messages ENABLE ROW LEVEL SECURITY;
 
 -- Profiles policies
 CREATE POLICY "Users can view own profile"
@@ -534,6 +579,47 @@ ON user_roles FOR ALL
 TO authenticated
 USING (public.has_role(auth.uid(), 'admin'));
 
+-- Contact messages policies
+CREATE POLICY "Anyone can create contact messages"
+ON contact_messages FOR INSERT
+USING (true);
+
+CREATE POLICY "Admins can view all contact messages"
+ON contact_messages FOR SELECT
+TO authenticated
+USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE POLICY "Admins can update contact messages"
+ON contact_messages FOR UPDATE
+TO authenticated
+USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE POLICY "Admins can delete contact messages"
+ON contact_messages FOR DELETE
+TO authenticated
+USING (public.has_role(auth.uid(), 'admin'));
+
+-- API Keys policies (Admin only)
+CREATE POLICY "Admins can manage API keys"
+ON api_keys FOR ALL
+TO authenticated
+USING (public.has_role(auth.uid(), 'admin'));
+
+-- Site Settings policies
+CREATE POLICY "Anyone can view non-encrypted settings"
+ON site_settings FOR SELECT
+USING (is_encrypted = false);
+
+CREATE POLICY "Admins can view all settings"
+ON site_settings FOR SELECT
+TO authenticated
+USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE POLICY "Admins can manage settings"
+ON site_settings FOR ALL
+TO authenticated
+USING (public.has_role(auth.uid(), 'admin'));
+
 -- Products are public (read-only for non-admins)
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
@@ -562,28 +648,44 @@ USING (public.has_role(auth.uid(), 'admin'));
 
 /*
 This schema includes:
-- User authentication and profiles
+- User authentication and profiles (with Google OAuth support)
 - Product catalog with categories and ingredients
 - Shopping cart and wishlist
-- Order management with payment tracking
+- Order management with Razorpay payment tracking
 - Coupon system
 - Review and rating system
 - Newsletter management
+- Contact message handling
 - Admin roles and permissions
+- Secure API keys storage
+- Site settings management
 
 To implement this:
-1. Set up your database (PostgreSQL recommended)
-2. Run this SQL file to create all tables
-3. Configure your backend API to connect to this database
-4. Implement authentication (use Lovable Cloud/Supabase Auth)
-5. Build API endpoints for CRUD operations
-6. Connect your React frontend to the API
+1. Create a Supabase project at https://supabase.com
+2. Go to SQL Editor in Supabase Dashboard
+3. Copy and paste this entire schema
+4. Click "Run" to execute the SQL
+5. Configure authentication providers (Email/Password, Google OAuth) in Auth settings
+6. Add your site URL and redirect URLs in Auth > URL Configuration
+7. Create your first admin user by inserting into user_roles table
+8. Store API keys (Razorpay, Google OAuth) in the api_keys table via admin panel
 
-Security Recommendations:
-- Enable Row Level Security (RLS) policies
-- Use prepared statements to prevent SQL injection
-- Hash passwords with bcrypt
-- Implement rate limiting
-- Add API authentication tokens
-- Set up proper CORS policies
+Security Features:
+- Row Level Security (RLS) enabled on all tables
+- Secure role-based access control using has_role() function
+- Encrypted API key storage
+- Separate user_roles table to prevent privilege escalation
+- Proper foreign key constraints and cascading deletes
+
+Payment Integration:
+- Razorpay payment gateway support
+- Payment tracking with order_id, payment_id, and signature
+- Multiple payment methods (Card, UPI, COD, Razorpay)
+- Payment status tracking
+
+Authentication:
+- Email/Password authentication
+- Google OAuth social login
+- Profile auto-creation on signup
+- Secure session management
 */

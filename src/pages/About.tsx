@@ -1,15 +1,11 @@
-import Navbar from "@/components/Navbar";
-import Footer from "@/components/Footer";
 import { Heart, Award, Users, Leaf } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import aboutImage from "@/assets/about-baker.jpg";
 
 const About = () => {
   return (
-    <div className="min-h-screen flex flex-col">
-      <Navbar />
-
-      <main className="flex-1">
+    <div className="min-h-screen"
+>
         {/* Hero Section */}
         <section className="relative py-20 bg-secondary/20">
           <div className="container mx-auto px-4">
@@ -138,9 +134,6 @@ const About = () => {
             </div>
           </div>
         </section>
-      </main>
-
-      <Footer />
     </div>
   );
 };

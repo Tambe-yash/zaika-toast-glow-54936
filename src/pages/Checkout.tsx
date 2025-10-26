@@ -27,7 +27,7 @@ const Checkout = () => {
     pincode: '',
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     // Save order to localStorage
@@ -50,9 +50,46 @@ const Checkout = () => {
       localStorage.setItem(`orders_${user.id}`, JSON.stringify(existingOrders));
     }
 
-    clearCart();
-    toast.success("Order placed successfully! 🎉");
-    navigate('/account');
+    // Handle Razorpay payment if card/upi is selected
+    if (paymentMethod === 'card' || paymentMethod === 'upi') {
+      // Load Razorpay script
+      const script = document.createElement('script');
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.async = true;
+      document.body.appendChild(script);
+
+      script.onload = () => {
+        const options = {
+          key: 'rzp_test_xxxxxxxxxx', // Replace with actual key from admin settings
+          amount: total * 100, // Amount in paise
+          currency: 'INR',
+          name: 'Zaika Toast',
+          description: 'Order Payment',
+          order_id: order.orderNumber,
+          handler: function (response: any) {
+            clearCart();
+            toast.success("Payment successful! Order placed 🎉");
+            navigate('/account');
+          },
+          prefill: {
+            name: formData.name,
+            email: formData.email,
+            contact: formData.phone,
+          },
+          theme: {
+            color: '#FF6B35',
+          },
+        };
+
+        const razorpay = new (window as any).Razorpay(options);
+        razorpay.open();
+      };
+    } else {
+      // COD payment
+      clearCart();
+      toast.success("Order placed successfully! 🎉");
+      navigate('/account');
+    }
   };
 
   if (items.length === 0) {
