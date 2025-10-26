@@ -6,23 +6,46 @@
 -- USERS & AUTHENTICATION
 -- ============================================
 
--- Users Table
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
+-- Note: Supabase handles auth in the auth.users table
+-- We create a profiles table to extend user data
+
+-- User Profiles (linked to Supabase auth.users)
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     first_name VARCHAR(100),
     last_name VARCHAR(100),
     phone VARCHAR(20),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Function to automatically create profile on user signup
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.profiles (id, first_name, last_name, phone)
+  VALUES (
+    new.id,
+    new.raw_user_meta_data->>'first_name',
+    new.raw_user_meta_data->>'last_name',
+    new.raw_user_meta_data->>'phone'
+  );
+  RETURN new;
+END;
+$$;
+
+-- Trigger to call function on new user creation
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
 -- User Addresses
 CREATE TABLE addresses (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     address_type VARCHAR(20) CHECK (address_type IN ('home', 'work', 'other')),
     street_address TEXT NOT NULL,
     city VARCHAR(100) NOT NULL,
@@ -101,7 +124,7 @@ CREATE TABLE product_ingredients (
 -- Shopping Cart
 CREATE TABLE cart_items (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     product_id UUID REFERENCES products(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -112,7 +135,7 @@ CREATE TABLE cart_items (
 -- Wishlist
 CREATE TABLE wishlist_items (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     product_id UUID REFERENCES products(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, product_id)
@@ -125,7 +148,7 @@ CREATE TABLE wishlist_items (
 -- Orders
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     order_number VARCHAR(50) UNIQUE NOT NULL,
     status VARCHAR(20) CHECK (status IN ('pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled')) DEFAULT 'pending',
     
@@ -205,7 +228,7 @@ CREATE TABLE coupons (
 CREATE TABLE reviews (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     product_id UUID REFERENCES products(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     order_id UUID REFERENCES orders(id) ON DELETE SET NULL,
     rating INTEGER CHECK (rating >= 1 AND rating <= 5) NOT NULL,
     comment TEXT,
@@ -237,7 +260,7 @@ CREATE TYPE public.app_role AS ENUM ('admin', 'staff', 'user');
 
 CREATE TABLE user_roles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
     role app_role NOT NULL DEFAULT 'user',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (user_id, role)
@@ -261,7 +284,7 @@ $$;
 -- Admin permissions and metadata
 CREATE TABLE admin_metadata (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE,
     permissions JSONB DEFAULT '{}',
     last_login TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -279,9 +302,8 @@ CREATE TABLE site_settings (
 -- INDEXES FOR PERFORMANCE
 -- ============================================
 
--- Users
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_created_at ON users(created_at);
+-- Profiles
+CREATE INDEX idx_profiles_created_at ON profiles(created_at);
 
 -- Products
 CREATE INDEX idx_products_category ON products(category_id);
@@ -353,7 +375,7 @@ END;
 $$ language 'plpgsql';
 
 -- Apply update triggers
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+CREATE TRIGGER update_profiles_updated_at BEFORE UPDATE ON profiles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_products_updated_at BEFORE UPDATE ON products

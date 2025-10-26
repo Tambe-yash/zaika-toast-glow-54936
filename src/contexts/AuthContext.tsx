@@ -1,4 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { supabase } from '@/integrations/supabase';
+import type { User as SupabaseUser, Session } from '@supabase/supabase-js';
 
 interface User {
   id: string;
@@ -30,70 +32,119 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Load user from localStorage on mount
-    const savedUser = localStorage.getItem('user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
+    // Set up auth state listener FIRST
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        setSession(session);
+        
+        if (session?.user) {
+          // Fetch user profile and role
+          const userData = await fetchUserData(session.user);
+          setUser(userData);
+        } else {
+          setUser(null);
+        }
+        setLoading(false);
+      }
+    );
+
+    // THEN check for existing session
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      setSession(session);
+      
+      if (session?.user) {
+        const userData = await fetchUserData(session.user);
+        setUser(userData);
+      }
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const login = async (email: string, password: string): Promise<boolean> => {
-    // Temporary: Check against mock users
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    const foundUser = users.find((u: any) => u.email === email && u.password === password);
-    
-    if (foundUser) {
-      const { password: _, ...userWithoutPassword } = foundUser;
-      setUser(userWithoutPassword);
-      localStorage.setItem('user', JSON.stringify(userWithoutPassword));
-      return true;
-    }
-    
-    // Default admin for testing
-    if (email === 'admin@zaikatoast.com' && password === 'admin123') {
-      const adminUser = {
-        id: 'admin-1',
-        email: 'admin@zaikatoast.com',
-        firstName: 'Admin',
-        lastName: 'User',
-        role: 'admin' as const,
+  const fetchUserData = async (supabaseUser: SupabaseUser): Promise<User | null> => {
+    try {
+      // Fetch profile
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', supabaseUser.id)
+        .single();
+
+      // Check if user has admin role
+      const { data: roleData } = await supabase
+        .rpc('has_role', { _user_id: supabaseUser.id, _role: 'admin' });
+
+      return {
+        id: supabaseUser.id,
+        email: supabaseUser.email!,
+        firstName: profile?.first_name || '',
+        lastName: profile?.last_name || '',
+        phone: profile?.phone || '',
+        role: roleData ? 'admin' : 'user',
       };
-      setUser(adminUser);
-      localStorage.setItem('user', JSON.stringify(adminUser));
-      return true;
+    } catch (error) {
+      console.error('Error fetching user data:', error);
+      return null;
     }
-    
-    return false;
+  };
+
+  const login = async (email: string, password: string): Promise<boolean> => {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+      
+      // User state will be updated by onAuthStateChange listener
+      return true;
+    } catch (error) {
+      console.error('Login error:', error);
+      return false;
+    }
   };
 
   const register = async (data: RegisterData): Promise<boolean> => {
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    
-    // Check if email already exists
-    if (users.some((u: any) => u.email === data.email)) {
+    try {
+      const redirectUrl = `${window.location.origin}/`;
+      
+      const { error } = await supabase.auth.signUp({
+        email: data.email,
+        password: data.password,
+        options: {
+          emailRedirectTo: redirectUrl,
+          data: {
+            first_name: data.firstName,
+            last_name: data.lastName,
+            phone: data.phone,
+          },
+        },
+      });
+
+      if (error) throw error;
+      
+      // User state will be updated by onAuthStateChange listener
+      return true;
+    } catch (error) {
+      console.error('Registration error:', error);
       return false;
     }
-    
-    const newUser = {
-      id: `user-${Date.now()}`,
-      ...data,
-      role: 'user' as const,
-    };
-    
-    users.push(newUser);
-    localStorage.setItem('users', JSON.stringify(users));
-    
-    const { password: _, ...userWithoutPassword } = newUser;
-    setUser(userWithoutPassword);
-    localStorage.setItem('user', JSON.stringify(userWithoutPassword));
-    return true;
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('user');
+  const logout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+      setSession(null);
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
   return (
